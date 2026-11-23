@@ -76,13 +76,27 @@ autocommit connection.
   No pool changes were justified:
   https://github.com/mhatipog/greenmask/tree/research/mysql-snapshot-innodb-view
 
+- The live MySQL 8.0 container suite now exercises **the actual v1**
+  `RunDump` and `RunRestore` pipelines, including schema pre/post scripts,
+  table data artifacts, `metadata.json`, database remapping to an empty
+  target, and **exact restored rows**. The fixture has the same customer code
+  in two tenants; only tenant 1 is restored. Apostrophes and UTF-8 text survive
+  the round trip, and the source tables remain untouched.
+- A separate live MySQL FK fixture references `UNIQUE (tenant, code)` while
+  the parent has an unrelated `PRIMARY KEY (id)`. Introspection now records
+  both sides of that constraint in order. The v1 graph and executed subset
+  query select exactly the intended tenant's row, addressing the MySQL side
+  of #548.
+
 ## Outstanding release gates
 
-1. Prove full dump/restore with this feature enabled through the v1 CLI,
-   including metadata, schema extraction, filtering and exact restored rows.
-2. Resolve real FK referenced-column introspection (#548). The compatibility
-   fallback for old introspection assumes every physical FK targets the PK;
-   it is **not correct** for references to alternate UNIQUE keys.
+1. The pipeline APIs pass the complete dump/restore round trip, but the
+   compiled user-facing CLI command is not yet smoke-tested with a YAML file.
+   Cover the configuration entry point and verify schema/metadata boundaries.
+2. For MySQL, physical alternate-UNIQUE FK targets are now introspected and
+   exercised through the v1 graph. Confirm MariaDB/Percona compatibility and
+   decide how to handle *legacy metadata* that has no recorded parent-side
+   columns (the historical physical-PK fallback remains lossy).
 3. Cyclic subset SQL is not implemented in PR #464. This branch rejects
    cyclic subset requests with an error, including self-references, instead
    of panicking. Cycles require separate implementation.
