@@ -20,9 +20,11 @@ type Reference struct {
 	Idx    int
 	Schema string
 	Name   string
-	// ReferencedKeys - list of foreign keys of current table
+	// ReferencedKeys are the referencing (child) columns, in FK order.
 	ReferencedKeys []string
-	IsNullable     bool
+	// TargetKeys are the referenced (parent) columns in the same order.
+	TargetKeys []string
+	IsNullable bool
 }
 
 type Table struct {

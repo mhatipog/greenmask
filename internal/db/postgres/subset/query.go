@@ -110,7 +110,7 @@ func generateWhereClause(subsetConds []string) string {
 	return "WHERE " + strings.Join(escapedConds, " AND ")
 }
 
-func generateSelectByPrimaryKey(table *entries.Table, pk []string) string {
+func generateSelectByKeys(table *entries.Table, pk []string) string {
 	var keys []string
 	for _, key := range pk {
 		keys = append(keys, fmt.Sprintf(`"%s"."%s"."%s"`, table.Schema, table.Name, key))

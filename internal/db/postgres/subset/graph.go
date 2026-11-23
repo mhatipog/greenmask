@@ -23,18 +23,23 @@ const (
 
 var (
 	foreignKeyColumnsQuery = `
-		SELECT n.nspname                as             fk_table_schema,
-			   fk_ref_table.relname     as             fk_table_name,
-			   array_agg(curr_table_attrs.attname ORDER BY array_position(curr_table_con.conkey, curr_table_attrs.attnum))     curr_table_columns,
-			   bool_or(NOT attnotnull)  as 		       is_nullable
-		FROM pg_catalog.pg_constraint curr_table_con
-				 join pg_catalog.pg_class fk_ref_table on curr_table_con.confrelid = fk_ref_table.oid
-				 join pg_catalog.pg_namespace n on fk_ref_table.relnamespace = n.oid
-				 join pg_catalog.pg_attribute curr_table_attrs on curr_table_attrs.attrelid = curr_table_con.conrelid AND
-																  curr_table_attrs.attnum = ANY (curr_table_con.conkey)
-		WHERE curr_table_con.conrelid = $1
-		  AND curr_table_con.contype = 'f'
-		GROUP BY fk_table_schema, fk_table_name, curr_table_con.oid;
+		SELECT n.nspname AS fk_table_schema,
+		       fk_ref_table.relname AS fk_table_name,
+		       array_agg(child_attr.attname ORDER BY key_pair.ordinality) AS child_columns,
+		       array_agg(parent_attr.attname ORDER BY key_pair.ordinality) AS parent_columns,
+		       bool_or(NOT child_attr.attnotnull) AS is_nullable
+		FROM pg_catalog.pg_constraint AS fk
+		JOIN pg_catalog.pg_class AS fk_ref_table ON fk.confrelid = fk_ref_table.oid
+		JOIN pg_catalog.pg_namespace AS n ON fk_ref_table.relnamespace = n.oid
+		CROSS JOIN LATERAL unnest(fk.conkey, fk.confkey)
+			WITH ORDINALITY AS key_pair(child_attnum, parent_attnum, ordinality)
+		JOIN pg_catalog.pg_attribute AS child_attr
+			ON child_attr.attrelid = fk.conrelid AND child_attr.attnum = key_pair.child_attnum
+		JOIN pg_catalog.pg_attribute AS parent_attr
+			ON parent_attr.attrelid = fk.confrelid AND parent_attr.attnum = key_pair.parent_attnum
+		WHERE fk.conrelid = $1
+		  AND fk.contype = 'f'
+		GROUP BY n.nspname, fk_ref_table.relname, fk.oid
 	`
 )
 
@@ -93,12 +98,16 @@ func NewGraph(
 					Msg("unable to find reference table (primary): it might be excluded from the dump")
 				continue
 			}
+			if len(ref.ReferencedKeys) == 0 || len(ref.ReferencedKeys) != len(ref.TargetKeys) {
+				return nil, fmt.Errorf("foreign key from %s.%s to %s.%s: mismatched column counts (%d referencing, %d referenced)",
+					table.Schema, table.Name, ref.Schema, ref.Name, len(ref.ReferencedKeys), len(ref.TargetKeys))
+			}
 			edge := NewEdge(
 				edgeIdSequence,
 				referenceTableIdx,
 				ref.IsNullable,
 				NewTableLink(idx, table, NewKeysByColumn(ref.ReferencedKeys), nil),
-				NewTableLink(referenceTableIdx, tables[referenceTableIdx], NewKeysByColumn(tables[referenceTableIdx].PrimaryKey), nil),
+				NewTableLink(referenceTableIdx, tables[referenceTableIdx], NewKeysByColumn(ref.TargetKeys), nil),
 			)
 			graph[idx] = append(
 				graph[idx],
@@ -109,7 +118,7 @@ func NewGraph(
 				edgeIdSequence,
 				idx,
 				ref.IsNullable,
-				NewTableLink(referenceTableIdx, tables[referenceTableIdx], NewKeysByColumn(tables[referenceTableIdx].PrimaryKey), nil),
+				NewTableLink(referenceTableIdx, tables[referenceTableIdx], NewKeysByColumn(ref.TargetKeys), nil),
 				NewTableLink(idx, table, NewKeysByColumn(ref.ReferencedKeys), nil),
 			)
 
@@ -547,7 +556,14 @@ func (g *Graph) generateQueryForTables(path *Path, scopeEdge *ScopeEdge) string 
 	whereConds := slices.Clone(rootTable.SubsetConds)
 	selectClause := generateSelectAllColumns(rootTable)
 	if scopeEdge != nil {
-		selectClause = generateSelectByPrimaryKey(rootTable, rootTable.PrimaryKey)
+		// The left-hand IN tuple contains the referencing FK columns.
+		// Select the corresponding target columns, which need not be the PK.
+		keys := scopeEdge.originalCondensedEdge.originalEdge.to.keys
+		targetColumns := make([]string, len(keys))
+		for i, key := range keys {
+			targetColumns[i] = key.Name
+		}
+		selectClause = generateSelectByKeys(rootTable, targetColumns)
 	}
 	fromClause := fmt.Sprintf(`FROM "%s"."%s" `, rootTable.Schema, rootTable.Name)
 
@@ -659,7 +675,7 @@ func getReferences(ctx context.Context, tx pgx.Tx, tableOid toolkit.Oid) ([]*too
 	defer rows.Close()
 	for rows.Next() {
 		ref := &toolkit.Reference{}
-		if err = rows.Scan(&ref.Schema, &ref.Name, &ref.ReferencedKeys, &ref.IsNullable); err != nil {
+		if err = rows.Scan(&ref.Schema, &ref.Name, &ref.ReferencedKeys, &ref.TargetKeys, &ref.IsNullable); err != nil {
 			return nil, fmt.Errorf("error scanning ForeignKeyColumnsQuery: %w", err)
 		}
 		refs = append(refs, ref)
