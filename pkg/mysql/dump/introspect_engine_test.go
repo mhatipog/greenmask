@@ -27,6 +27,9 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	core "github.com/greenmaskio/greenmask/pkg/common/core"
+	"github.com/greenmaskio/greenmask/pkg/common/graphbuilder"
+	"github.com/greenmaskio/greenmask/pkg/common/subsetbuilder"
+	kinds "github.com/greenmaskio/greenmask/pkg/mysql/kinds"
 	mysqlmodels "github.com/greenmaskio/greenmask/pkg/mysql/models"
 	"github.com/greenmaskio/greenmask/pkg/testutils"
 )
@@ -280,9 +283,100 @@ func (s *introspectEngineSuite) TestGetForeignKeys() {
 			},
 		}, actual)
 
-		keys, err := eng.getForeignKeyKeys(ctx, &txMock{tx}, "testdb", "ref_table_not_null_ibfk_1")
+		keys, referenced, err := eng.getForeignKeyKeys(ctx, &txMock{tx}, "testdb", "ref_table_not_null", "testdb", "ref_table_not_null_ibfk_1")
 		s.Require().NoError(err)
 		s.Require().Equal([]string{"main_table_id"}, keys)
+		s.Require().Equal([]string{"id"}, referenced)
+	})
+
+	s.Run("composite FK references a UNIQUE key, not the physical PK", func() {
+		s.MigrateUp(ctx, []string{
+			`CREATE TABLE parent_alt_unique (
+				id INT PRIMARY KEY,
+				tenant INT NOT NULL,
+				code VARCHAR(30) NOT NULL,
+				UNIQUE KEY ux_tenant_code (tenant, code)
+			) ENGINE=InnoDB;`,
+			`CREATE TABLE child_alt_unique (
+				id INT PRIMARY KEY,
+				child_tenant INT NOT NULL,
+				child_code VARCHAR(30) NOT NULL,
+				CONSTRAINT fk_alt_unique_319 FOREIGN KEY (child_tenant, child_code)
+					REFERENCES parent_alt_unique (tenant, code)
+			) ENGINE=InnoDB;`,
+			`INSERT INTO parent_alt_unique VALUES (501, 1, 'shared'), (777, 2, 'shared');`,
+			`INSERT INTO child_alt_unique VALUES (11, 1, 'shared'), (22, 2, 'shared');`,
+		})
+		defer s.MigrateDown(ctx, []string{
+			`DROP TABLE child_alt_unique;`,
+			`DROP TABLE parent_alt_unique;`,
+		})
+
+		tx, err := db.Begin()
+		s.Require().NoError(err)
+		defer func() { _ = tx.Rollback() }()
+		eng := s.newEngine(nil, nil, nil, nil)
+		refs, err := eng.getForeignKeys(ctx, &txMock{tx}, "testdb", "child_alt_unique")
+		s.Require().NoError(err)
+		s.Require().Len(refs, 1)
+		s.Equal("fk_alt_unique_319", refs[0].ConstraintName)
+		s.Equal([]string{"child_tenant", "child_code"}, refs[0].Keys)
+		s.Equal([]string{"tenant", "code"}, refs[0].ReferencedKeys)
+		s.Equal("parent_alt_unique", refs[0].ReferencedName)
+		s.False(refs[0].IsNullable)
+
+		// The graph and subset planner must join on the UNIQUE key, not
+		// parent_alt_unique.id (the physical primary key).
+		const kind = kinds.ObjectKindTable
+		parent := core.Table{
+			ID: 0, Schema: "testdb", Name: "parent_alt_unique", PrimaryKey: []string{"id"},
+			Columns: []core.Column{{Name: "id"}, {Name: "tenant"}, {Name: "code"}},
+		}
+		child := core.Table{
+			ID: 1, Schema: "testdb", Name: "child_alt_unique",
+			Columns:    []core.Column{{Name: "id"}, {Name: "child_tenant"}, {Name: "child_code"}},
+			References: refs,
+		}
+		introspection := core.IntrospectionResult{
+			KindsMap: map[core.ObjectKind][]core.Object{
+				kind: {
+					{ID: 0, Kind: kind, Name: parent.Name, Payload: parent},
+					{ID: 1, Kind: kind, Name: child.Name, Payload: child},
+				},
+			},
+		}
+		graph, err := graphbuilder.New(kind).BuildGraph(ctx, introspection)
+		s.Require().NoError(err)
+		s.Require().Len(graph.ObjectGraph.Edges[1], 1)
+		link := graph.ObjectGraph.Edges[1][0].Link.Payload.(core.ForeignKeyLinkPayload)
+		s.Equal([]string{"child_tenant", "child_code"}, link.Columns)
+		s.Equal([]string{"tenant", "code"}, link.RefColumns)
+
+		subset, err := subsetbuilder.New(subsetbuilder.DialectMySQL, kind).BuildSubset(
+			ctx, core.SubsetBuilderInput{
+				Introspection:   introspection,
+				DependencyGraph: graph,
+				TableConfigs: []core.TableConfig{{
+					Schema: "testdb", Name: parent.Name,
+					SubsetConds: []string{"`testdb`.`parent_alt_unique`.`tenant` = 1"},
+				}},
+			},
+		)
+		s.Require().NoError(err)
+		query := subset.SubsetMap[1]
+		s.Require().NotEmpty(query)
+		rows, err := tx.QueryContext(ctx, query)
+		s.Require().NoError(err)
+		defer rows.Close()
+		var selected []int
+		for rows.Next() {
+			var id, tenant int
+			var code string
+			s.Require().NoError(rows.Scan(&id, &tenant, &code))
+			selected = append(selected, id)
+		}
+		s.Require().NoError(rows.Err())
+		s.Equal([]int{11}, selected, "alternate-key FK join must not leak the other tenant")
 	})
 
 	s.Run("unknown fk keys errors", func() {
@@ -290,7 +384,7 @@ func (s *introspectEngineSuite) TestGetForeignKeys() {
 		s.Require().NoError(err)
 		defer func() { _ = tx.Rollback() }()
 		eng := s.newEngine(nil, nil, nil, nil)
-		_, err = eng.getForeignKeyKeys(ctx, &txMock{tx}, "testdb", "unknown_ibfk_1")
+		_, _, err = eng.getForeignKeyKeys(ctx, &txMock{tx}, "testdb", "not_a_table", "testdb", "unknown_ibfk_1")
 		s.Require().ErrorIs(err, errIntrospectNoKeysFound)
 	})
 }

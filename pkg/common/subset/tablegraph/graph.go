@@ -56,6 +56,15 @@ func NewGraph(tables []core.Table) (Graph, error) {
 				)
 			}
 
+			parentKeys := reference.ReferencedKeys
+			if len(parentKeys) == 0 {
+				parentKeys = tables[referenceTableIdx].PrimaryKey
+			}
+			if len(reference.Keys) == 0 || len(reference.Keys) != len(parentKeys) {
+				return Graph{}, fmt.Errorf("reference %s.%s to %s.%s: invalid key mapping (%d child, %d parent columns)",
+					table.Schema, table.Name, reference.ReferencedSchema, reference.ReferencedName, len(reference.Keys), len(parentKeys))
+			}
+
 			from := NewTableLink(
 				tableIdx,
 				table,
@@ -65,7 +74,7 @@ func NewGraph(tables []core.Table) (Graph, error) {
 			to := NewTableLink(
 				referenceTableIdx,
 				tables[referenceTableIdx],
-				NewKeysByColumn(tables[referenceTableIdx].PrimaryKey),
+				NewKeysByColumn(parentKeys),
 				nil,
 			)
 
@@ -85,7 +94,7 @@ func NewGraph(tables []core.Table) (Graph, error) {
 			transposedFrom := NewTableLink(
 				referenceTableIdx,
 				tables[referenceTableIdx],
-				NewKeysByColumn(tables[referenceTableIdx].PrimaryKey),
+				NewKeysByColumn(parentKeys),
 				nil,
 			)
 

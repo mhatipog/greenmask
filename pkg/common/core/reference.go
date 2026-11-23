@@ -24,8 +24,11 @@ type Reference struct {
 	ConstraintName string
 	// ConstraintSchema - schema of the foreign key constraint.
 	ConstraintSchema string
-	// ReferencedKeys - list of the keys that involved in the foreign key constraint.
+	// Keys are the referencing columns, in constraint order.
 	Keys []string
+	// ReferencedKeys are the corresponding referenced columns, in the same order.
+	// If absent, older engine introspection falls back to the parent's primary key.
+	ReferencedKeys []string
 	// IsNullable - flag that indicates whether the foreign key constraint is nullable.
 	IsNullable bool
 }

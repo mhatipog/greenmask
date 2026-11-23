@@ -428,26 +428,38 @@ func (e *introspectEngine) getForeignKeys(ctx context.Context, db core.DB, table
 	}
 
 	for idx, c := range constraints {
-		keys, err := e.getForeignKeyKeys(ctx, db, c.ConstraintSchema, c.ConstraintName)
+		keys, referencedKeys, err := e.getForeignKeyKeys(ctx, db, tableSchema, tableName, c.ConstraintSchema, c.ConstraintName)
 		if err != nil {
-			return nil, fmt.Errorf("get foreign key keys: %w", err)
+			return nil, fmt.Errorf("get columns for foreign key %s.%s: %w", c.ConstraintSchema, c.ConstraintName, err)
 		}
 		constraints[idx].SetKeys(keys)
+		constraints[idx].ReferencedKeys = referencedKeys
 	}
 	return constraints, nil
 }
 
-func (e *introspectEngine) getForeignKeyKeys(ctx context.Context, db core.DB, constraintSchema, constraintName string) ([]string, error) {
-	query := `
-		SELECT k.column_name
-		FROM information_schema.key_column_usage k
+// getForeignKeyKeys returns the child and parent columns as ordered pairs.
+// In particular, a real FK can target a UNIQUE index rather than the primary
+// key; guessing the parent column names from the primary key is incorrect.
+// Include the child table in the constraint lookup so unrelated constraints
+// cannot contaminate the mapping.
+func (e *introspectEngine) getForeignKeyKeys(
+	ctx context.Context, db core.DB,
+	tableSchema, tableName, constraintSchema, constraintName string,
+) ([]string, []string, error) {
+	const query = `
+		SELECT k.COLUMN_NAME, k.REFERENCED_COLUMN_NAME
+		FROM information_schema.KEY_COLUMN_USAGE AS k
 		WHERE k.CONSTRAINT_SCHEMA = ?
 		  AND k.CONSTRAINT_NAME = ?
-		ORDER BY k.ordinal_position;
+		  AND k.TABLE_SCHEMA = ?
+		  AND k.TABLE_NAME = ?
+		  AND k.REFERENCED_COLUMN_NAME IS NOT NULL
+		ORDER BY k.ORDINAL_POSITION
 	`
-	rows, err := db.QueryContext(ctx, query, constraintSchema, constraintName)
+	rows, err := db.QueryContext(ctx, query, constraintSchema, constraintName, tableSchema, tableName)
 	if err != nil {
-		return nil, fmt.Errorf("execute foreign key keys query: %w", err)
+		return nil, nil, fmt.Errorf("query foreign key columns: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -455,21 +467,25 @@ func (e *introspectEngine) getForeignKeyKeys(ctx context.Context, db core.DB, co
 		}
 	}()
 
-	var keys []string
+	var child, parent []string
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("scan foreign key keys row: %w", err)
+		var referencing, referenced string
+		if err := rows.Scan(&referencing, &referenced); err != nil {
+			return nil, nil, fmt.Errorf("scan foreign key columns: %w", err)
 		}
-		keys = append(keys, key)
+		child = append(child, referencing)
+		parent = append(parent, referenced)
 	}
-	if len(keys) == 0 {
-		return nil, fmt.Errorf(
-			"get fk column for constraint %s.%s: %w",
-			constraintSchema, constraintName, errIntrospectNoKeysFound,
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate foreign key columns: %w", err)
+	}
+	if len(child) == 0 {
+		return nil, nil, fmt.Errorf(
+			"get fk columns for constraint %s.%s on %s.%s: %w",
+			constraintSchema, constraintName, tableSchema, tableName, errIntrospectNoKeysFound,
 		)
 	}
-	return keys, nil
+	return child, parent, nil
 }
 
 func (e *introspectEngine) getForeignKeyConstraints(ctx context.Context, db core.DB, tableSchema, tableName string) ([]core.Reference, error) {
