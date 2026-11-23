@@ -95,10 +95,12 @@ type stubGraphBuilder struct {
 	result core.DependencyGraphResult
 	err    error
 	calls  int
+	input  core.IntrospectionResult
 }
 
-func (s *stubGraphBuilder) BuildGraph(context.Context, core.IntrospectionResult) (core.DependencyGraphResult, error) {
+func (s *stubGraphBuilder) BuildGraph(_ context.Context, input core.IntrospectionResult) (core.DependencyGraphResult, error) {
 	s.calls++
+	s.input = input
 	return s.result, s.err
 }
 

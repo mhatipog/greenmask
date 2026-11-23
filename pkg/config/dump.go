@@ -15,6 +15,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	commonconfig "github.com/greenmaskio/greenmask/pkg/common/config"
@@ -96,6 +97,55 @@ func (tc TransformerConfig) ToTransformerConfig() core.TransformerConfig {
 		tc.When,
 		tc.ResolveEnv,
 	)
+}
+
+// VirtualPrimaryKey is a logical row identifier used for legacy tables that
+// do not have a physical primary key. Its uniqueness is verified against the
+// dump snapshot before it participates in subset planning.
+type VirtualPrimaryKey struct {
+	Schema  string   `mapstructure:"schema" json:"schema" yaml:"schema"`
+	Name    string   `mapstructure:"name" json:"name" yaml:"name"`
+	Columns []string `mapstructure:"columns" json:"columns" yaml:"columns"`
+}
+
+func (d Dump) ToCoreVirtualPrimaryKeys() []core.VirtualPrimaryKey {
+	keys := make([]core.VirtualPrimaryKey, 0, len(d.VirtualPrimaryKeys))
+	for _, key := range d.VirtualPrimaryKeys {
+		keys = append(keys, core.VirtualPrimaryKey{
+			Schema: key.Schema, Name: key.Name, Columns: append([]string(nil), key.Columns...),
+		})
+	}
+	return keys
+}
+
+// ToCoreVirtualReferences reuses the existing configuration shape for
+// named-column relationships. Expression and polymorphic references require
+// separate query semantics; reject them explicitly rather than accepting
+// configuration whose meaning would be silently lost.
+func (d Dump) ToCoreVirtualReferences() ([]core.VirtualReference, error) {
+	var links []core.VirtualReference
+	for _, source := range d.VirtualReferences {
+		for _, target := range source.References {
+			if len(target.PolymorphicExprs) != 0 {
+				return nil, fmt.Errorf("virtual reference %q.%q -> %q.%q: polymorphic expressions not supported in v1 planning",
+					source.Schema, source.Name, target.Schema, target.Name)
+			}
+			cols := make([]string, 0, len(target.Columns))
+			for _, column := range target.Columns {
+				if column.Expression != "" {
+					return nil, fmt.Errorf("virtual reference %q.%q -> %q.%q: expression columns not supported in v1 planning",
+						source.Schema, source.Name, target.Schema, target.Name)
+				}
+				cols = append(cols, column.Name)
+			}
+			links = append(links, core.VirtualReference{
+				FromSchema: source.Schema, FromTable: source.Name,
+				ToSchema: target.Schema, ToTable: target.Name,
+				Columns: cols, NotNull: target.NotNull,
+			})
+		}
+	}
+	return links, nil
 }
 
 /*
@@ -212,13 +262,14 @@ func (o *CommonDumpOptions) GetExcludedTableDefinitions() []string {
 }
 
 type Dump struct {
-	Options           CommonDumpOptions    `mapstructure:"options" yaml:"options" json:"options"`
-	MysqlConfig       MysqlDumpConfig      `mapstructure:"mysql" yaml:"mysql" json:"mysql"`
-	PostgresqlConfig  PostgresqlDumpConfig `mapstructure:"postgresql" yaml:"postgresql" json:"postgresql"`
-	Transformation    TransformationConfig `mapstructure:"transformation" yaml:"transformation" json:"transformation,omitempty"`
-	VirtualReferences []VirtualReference   `mapstructure:"virtual_references" yaml:"virtual_references" json:"virtual_references,omitempty"`
-	Tag               []string             `mapstructure:"tag" yaml:"tag" json:"tag,omitempty"`
-	Description       string               `mapstructure:"description" yaml:"description" json:"description,omitempty"`
+	Options            CommonDumpOptions    `mapstructure:"options" yaml:"options" json:"options"`
+	MysqlConfig        MysqlDumpConfig      `mapstructure:"mysql" yaml:"mysql" json:"mysql"`
+	PostgresqlConfig   PostgresqlDumpConfig `mapstructure:"postgresql" yaml:"postgresql" json:"postgresql"`
+	Transformation     TransformationConfig `mapstructure:"transformation" yaml:"transformation" json:"transformation,omitempty"`
+	VirtualPrimaryKeys []VirtualPrimaryKey  `mapstructure:"virtual_primary_keys" yaml:"virtual_primary_keys" json:"virtual_primary_keys,omitempty"`
+	VirtualReferences  []VirtualReference   `mapstructure:"virtual_references" yaml:"virtual_references" json:"virtual_references,omitempty"`
+	Tag                []string             `mapstructure:"tag" yaml:"tag" json:"tag,omitempty"`
+	Description        string               `mapstructure:"description" yaml:"description" json:"description,omitempty"`
 }
 
 func NewDump() Dump {

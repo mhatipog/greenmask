@@ -70,7 +70,29 @@ func (p *DumpPipeline) Discover(
 	}
 	state.Discovery.Introspection = &introspection
 
-	graph, err := p.Stages.DependencyGraphBuilder.BuildGraph(ctx, introspection)
+	// Virtual relationships are a planning overlay, not schema introspection.
+	// Validate them on the active dump snapshot before building the graph,
+	// while retaining the physical result for drift and durable metadata.
+	graphInput := introspection
+	if len(state.Discovery.Config.Dump.VirtualPrimaryKeys) > 0 ||
+		len(state.Discovery.Config.Dump.VirtualReferences) > 0 {
+		if p.Stages.VirtualPlanningBuilder == nil {
+			return fmt.Errorf("virtual primary keys/references are not supported by this database engine")
+		}
+		links, err := state.Discovery.Config.Dump.ToCoreVirtualReferences()
+		if err != nil {
+			return fmt.Errorf("parse virtual references: %w", err)
+		}
+		graphInput, err = p.Stages.VirtualPlanningBuilder.Build(
+			ctx, runtime.Session, introspection,
+			state.Discovery.Config.Dump.ToCoreVirtualPrimaryKeys(), links,
+		)
+		if err != nil {
+			return fmt.Errorf("verify virtual graph: %w", err)
+		}
+	}
+
+	graph, err := p.Stages.DependencyGraphBuilder.BuildGraph(ctx, graphInput)
 	if err != nil {
 		return fmt.Errorf("build dependency graph: %w", err)
 	}

@@ -76,6 +76,10 @@ type DumpStages struct {
 	//   - integrity validation
 	DependencyGraphBuilder core.DependencyGraphBuilder
 
+	// VirtualPlanningBuilder validates virtual keys/references on the active
+	// snapshot and supplies a detached graph input. Optional when unconfigured.
+	VirtualPlanningBuilder core.VirtualPlanningBuilder
+
 	DumpMetadataLoader core.DumpMetadataLoader
 
 	// SchemaDriftValidator analyzes differences between previous dump metadata

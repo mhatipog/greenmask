@@ -54,6 +54,7 @@ func NewDumpStages() pipeline.DumpStages {
 		DatabaseSessionBuilder:      &DumpSessionBuilder{},
 		Introspector:                NewIntrospectorV2(),
 		DependencyGraphBuilder:      graphbuilder.New(kinds.ObjectKindTable),
+		VirtualPlanningBuilder:      &VirtualPlanningBuilder{},
 		DumpMetadataLoader:          &DumpMetadataLoader{},
 		SchemaDriftValidator:        &SchemaDriftValidator{},
 		SubsetBuilder:               subsetbuilder.New(subsetbuilder.DialectMySQL, kinds.ObjectKindTable),
