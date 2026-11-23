@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/huandu/go-sqlbuilder"
 
@@ -195,40 +196,26 @@ func dialectFlavor(d Dialect) sqlbuilder.Flavor {
 	}
 }
 
-func tableName(d Dialect, t core.Table, oid core.ObjectID, aliasMap map[core.ObjectID]string) string {
-	if alias, ok := aliasMap[oid]; ok {
-		switch d {
-		case DialectPostgres:
-			return fmt.Sprintf(`"%s"`, alias)
-		case DialectMySQL:
-			return fmt.Sprintf("`%s`", alias)
-		}
-	}
+func quoteIdentifier(d Dialect, value string) string {
 	switch d {
 	case DialectPostgres:
-		return fmt.Sprintf(`"%s"."%s"`, t.Schema, t.Name)
+		return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 	case DialectMySQL:
-		return fmt.Sprintf("`%s`.`%s`", t.Schema, t.Name)
+		return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+	default:
+		panic(fmt.Sprintf("unsupported dialect: %s", d))
 	}
-	panic(fmt.Sprintf("unsupported dialect: %s", d))
+}
+
+func tableName(d Dialect, t core.Table, oid core.ObjectID, aliasMap map[core.ObjectID]string) string {
+	if alias, ok := aliasMap[oid]; ok {
+		return quoteIdentifier(d, alias)
+	}
+	return quoteIdentifier(d, t.Schema) + "." + quoteIdentifier(d, t.Name)
 }
 
 func columnName(d Dialect, t core.Table, oid core.ObjectID, col string, aliasMap map[core.ObjectID]string) string {
-	if alias, ok := aliasMap[oid]; ok {
-		switch d {
-		case DialectPostgres:
-			return fmt.Sprintf(`"%s"."%s"`, alias, col)
-		case DialectMySQL:
-			return fmt.Sprintf("`%s`.`%s`", alias, col)
-		}
-	}
-	switch d {
-	case DialectPostgres:
-		return fmt.Sprintf(`"%s"."%s"."%s"`, t.Schema, t.Name, col)
-	case DialectMySQL:
-		return fmt.Sprintf("`%s`.`%s`.`%s`", t.Schema, t.Name, col)
-	}
-	panic(fmt.Sprintf("unsupported dialect: %s", d))
+	return tableName(d, t, oid, aliasMap) + "." + quoteIdentifier(d, col)
 }
 
 func fieldNames(

@@ -24,8 +24,12 @@ type Reference struct {
 	ConstraintName string
 	// ConstraintSchema - schema of the foreign key constraint.
 	ConstraintSchema string
-	// ReferencedKeys - list of the keys that involved in the foreign key constraint.
+	// Keys are referencing (child-side) columns in constraint order.
 	Keys []string
+	// ReferencedKeys are the referenced (parent-side) columns in matching order.
+	// An empty slice preserves the legacy assumption that the target is the
+	// parent's physical primary key. Virtual references must supply this field.
+	ReferencedKeys []string
 	// IsNullable - flag that indicates whether the foreign key constraint is nullable.
 	IsNullable bool
 }

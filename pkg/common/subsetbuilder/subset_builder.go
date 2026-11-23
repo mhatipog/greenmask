@@ -100,7 +100,7 @@ func buildSubsetQuery(
 ) (map[core.ObjectID]string, error) {
 	rootNode := dg.CondensedGraph.Nodes[sg.rootSCCID]
 	var b sccQueryBuilder
-	if len(rootNode.Members) > 1 {
+	if rootNode.Cycles != nil || len(rootNode.Members) > 1 {
 		b = newCyclesQueryBuilder(sg, dg, subsetConds, dialect)
 	} else {
 		b = newDAGQueryBuilder(sg, dg, subsetConds, dialect)

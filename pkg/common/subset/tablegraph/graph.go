@@ -17,7 +17,6 @@ package tablegraph
 import (
 	"errors"
 	"fmt"
-	"slices"
 
 	core "github.com/greenmaskio/greenmask/pkg/common/core"
 )
@@ -43,17 +42,47 @@ func NewGraph(tables []core.Table) (Graph, error) {
 	var edgeIdSequence int
 	graph := make([][]Edge, len(tables))
 	transposedGraph := make([][]Edge, len(tables))
+	type tableName struct{ schema, name string }
+	byName := make(map[tableName]int, len(tables))
+	for i, table := range tables {
+		key := tableName{table.Schema, table.Name}
+		if _, exists := byName[key]; exists {
+			return Graph{}, fmt.Errorf("duplicate graph table %q.%q", table.Schema, table.Name)
+		}
+		byName[key] = i
+	}
 	for tableIdx, table := range tables {
 		for _, reference := range table.References {
-			referenceTableIdx := slices.IndexFunc(tables, func(t core.Table) bool {
-				return t.Name == reference.ReferencedName && t.Schema == reference.ReferencedSchema
-			})
+			referenceTableIdx, found := byName[tableName{reference.ReferencedSchema, reference.ReferencedName}]
+			if !found {
+				return Graph{}, fmt.Errorf("reference from %q.%q to %q.%q: %w",
+					table.Schema, table.Name, reference.ReferencedSchema, reference.ReferencedName, errReferenceTableNotFound)
+			}
 
-			if referenceTableIdx == -1 {
-				return Graph{}, fmt.Errorf(
-					"reference search %s.%s: %w",
-					table.Schema, table.Name, errReferenceTableNotFound,
-				)
+			parentKeys := reference.ReferencedKeys
+			if len(parentKeys) == 0 {
+				// Older introspection only records the child side. Preserve its
+				// primary-key fallback until each engine supplies actual FK targets.
+				parentKeys = tables[referenceTableIdx].PrimaryKey
+			}
+			if len(reference.Keys) == 0 || len(parentKeys) == 0 || len(reference.Keys) != len(parentKeys) {
+				return Graph{}, fmt.Errorf("reference from %q.%q to %q.%q: invalid key mapping (%d child, %d parent columns)",
+					table.Schema, table.Name, reference.ReferencedSchema, reference.ReferencedName, len(reference.Keys), len(parentKeys))
+			}
+			if len(tables[referenceTableIdx].Columns) > 0 {
+				for _, name := range parentKeys {
+					found := false
+					for _, col := range tables[referenceTableIdx].Columns {
+						if col.Name == name {
+							found = true
+							break
+						}
+					}
+					if !found {
+						return Graph{}, fmt.Errorf("reference from %q.%q to %q.%q: unknown target column %q",
+							table.Schema, table.Name, reference.ReferencedSchema, reference.ReferencedName, name)
+					}
+				}
 			}
 
 			from := NewTableLink(
@@ -65,7 +94,7 @@ func NewGraph(tables []core.Table) (Graph, error) {
 			to := NewTableLink(
 				referenceTableIdx,
 				tables[referenceTableIdx],
-				NewKeysByColumn(tables[referenceTableIdx].PrimaryKey),
+				NewKeysByColumn(parentKeys),
 				nil,
 			)
 
@@ -85,7 +114,7 @@ func NewGraph(tables []core.Table) (Graph, error) {
 			transposedFrom := NewTableLink(
 				referenceTableIdx,
 				tables[referenceTableIdx],
-				NewKeysByColumn(tables[referenceTableIdx].PrimaryKey),
+				NewKeysByColumn(parentKeys),
 				nil,
 			)
 

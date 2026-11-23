@@ -40,5 +40,5 @@ func newCyclesQueryBuilder(
 }
 
 func (b *cyclesQueryBuilder) build() (map[core.ObjectID]string, error) {
-	panic(fmt.Sprintf("cyclesQueryBuilder: not yet implemented (SCC %d)", b.sg.rootSCCID))
+	return nil, fmt.Errorf("subset of cyclic SCC %d is not supported", b.sg.rootSCCID)
 }
